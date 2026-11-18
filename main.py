@@ -1,27 +1,54 @@
-"""MUUN RECOVERY PRO — aplicación estructurada (núcleo desacoplado + interfaz Tkinter)."""
-import argparse
-import sys
-import os
-from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 
-ROOT = Path(__file__).resolve().parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from core.servers import load_server_lines, parse_server, check_server
 
-from core import (
-    _tls_context, _GO_SERVER_RE, _bech32_polymod, _bech32_hrp_expand,
-    _convertbits, _read_file_text, _safe_parts, _build_accounts,
-    _read_response
+app = FastAPI(title="MUUN RECOVERY API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-from ui.app import main, App
 
-# Re-exportar tkinter para compatibilidad con pruebas/extensiones.
-try:
-    import tkinter as tk
-except ImportError:
-    tk = None
 
-__all__ = [n for n in globals() if not n.startswith("__")]
+@app.get("/")
+def home():
+    return {
+        "ok": True,
+        "service": "MUUN RECOVERY API",
+        "endpoints": ["/api/servers", "/api/servers/check?limit=10"],
+    }
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+
+@app.get("/api/servers")
+def list_servers():
+    lines = load_server_lines()
+    return {"total": len(lines), "servers": lines}
+
+
+@app.get("/api/servers/check")
+def check_servers(limit: int = Query(10, ge=1, le=25)):
+    lines = load_server_lines()[:limit]
+    parsed = []
+    for line in lines:
+        try:
+            p = parse_server(line)
+            if p:
+                parsed.append((line, p))
+        except ValueError:
+            continue
+
+    def _probe(item):
+        line, (host, port, use_ssl) = item
+        status = check_server(host, port, use_ssl)
+        return {"server": line, "host": host, "port": port, "ssl": use_ssl, **status}
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        results = list(pool.map(_probe, parsed))
+
+    results.sort(key=lambda r: (not r["ok"], r["latency"] if r["latency"] is not None else 10**6))
+    online_count = sum(1 for r in results if r["ok"])
+    return {"checked": len(results), "online": online_count, "results": results}

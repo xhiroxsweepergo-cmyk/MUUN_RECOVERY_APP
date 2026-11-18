@@ -1,2 +1,1 @@
-# Solo biblioteca estandar de Python 3.10+ (Tkinter incluido en python.org).
-# No se requieren paquetes externos.
+fastapi
